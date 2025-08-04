@@ -1,0 +1,9 @@
+{
+    "option_id": 2001,
+    "hold_music": "not_opus.wav",
+    "timeout": 0,
+    "timeout_message": "timeout.wav",
+    "timeout_action": 0,
+    "announce_time": 300,
+    "announce_message": "announce.wav"
+}

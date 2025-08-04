@@ -1,3 +1,11 @@
-config.json
+# Binaries
 virtual-call-center.exe
 virtual-call-center
+gophone-windows.exe
+gpphone-linux-amd64
+
+# Configs
+configs/*.json
+
+# Other
+*.mp3

@@ -1,0 +1,18 @@
+{
+  "ivrs": [
+    {
+      "option_id": 1000,
+      "welcome_message": "ivr_1000.wav",
+      "timeout": 60,
+      "timeout_message": "ivr_timeout.wav",
+      "timeout_action": 0,
+      "invalid_option_message": "ivr_invalid_option.wav",
+      "options": [
+        {
+          "option_number": 1,
+          "option_action": 1001
+        }
+      ]
+    }
+  ]
+}

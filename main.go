@@ -3,13 +3,48 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/Reverse-Call-Center/virtual-call-center/configs"
+	"github.com/Reverse-Call-Center/virtual-call-center/config"
 	"github.com/emiago/diago"
 	"github.com/emiago/sipgo"
+	"github.com/emiago/sipgo/sip"
+)
+
+var (
+	globalConfig *config.Config
+	ivrConfig    map[int]*config.Ivr
+	queueConfig  map[int]*config.Queue
+	activeCalls  map[string]*CallSession
+	callsMutex   sync.RWMutex
+)
+
+type CallSession struct {
+	ID        string
+	CallerID  string
+	Dialog    *diago.DialogServerSession
+	State     CallState
+	IVRLevel  int
+	QueueID   int
+	StartTime time.Time
+	Context   context.Context
+	Cancel    context.CancelFunc
+}
+
+type CallState int
+
+const (
+	StateConnecting CallState = iota
+	StateIVR
+	StateQueue
+	StateConnected
+	StateHangup
 )
 
 func main() {
@@ -17,22 +52,53 @@ func main() {
 	defer cancel()
 
 	fmt.Println("Virtual Call Center Starting...")
-	config, err := configs.LoadConfig()
+	config, err := config.LoadConfig()
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
-	startSIPServer(config, ctx)
+	globalConfig = config
+	activeCalls = make(map[string]*CallSession)
+
+	// Initialize IVR and Queue configs from your config
+	initializeConfigs()
+
+	startSIPServer(ctx)
 }
 
-func startSIPServer(config *configs.Config, ctx context.Context) {
-	fmt.Println("Starting SIP server on:", config.SIPProtocol, config.SIPListenAddress, ":", config.SIPPort)
+func initializeConfigs() {
+	ivrConfig = make(map[int]*config.Ivr)
+	queueConfig = make(map[int]*config.Queue)
+
+	// Load IVR config and handle error
+	ivrConfigData, err := config.LoadIvrConfig()
+	if err != nil {
+		fmt.Printf("Error loading IVR config: %v\n", err)
+		return
+	}
+
+	for _, ivr := range ivrConfigData.IVRs {
+		if ivr.OptionId == 0 {
+			fmt.Printf("Skipping IVR with OptionId 0: %v\n", ivr)
+			continue
+		}
+		if _, exists := ivrConfig[ivr.OptionId]; exists {
+			fmt.Printf("Duplicate IVR OptionId %d found, skipping: %v\n", ivr.OptionId, ivr)
+			continue
+		}
+		fmt.Printf("Loading IVR: %v\n", ivr)
+		ivrConfig[ivr.OptionId] = ivr
+	}
+}
+
+func startSIPServer(ctx context.Context) {
+	fmt.Println("Starting SIP server on:", globalConfig.SIPProtocol, globalConfig.SIPListenAddress, ":", globalConfig.SIPPort)
 
 	transport := diago.Transport{
-		Transport: config.SIPProtocol,
-		BindHost:  config.SIPListenAddress,
-		BindPort:  config.SIPPort,
+		Transport: globalConfig.SIPProtocol,
+		BindHost:  globalConfig.SIPListenAddress,
+		BindPort:  globalConfig.SIPPort,
 	}
 
 	ua, err := sipgo.NewUA()
@@ -41,52 +107,255 @@ func startSIPServer(config *configs.Config, ctx context.Context) {
 		return
 	}
 
-	dg := diago.NewDiago(ua,
-		diago.WithTransport(transport))
+	dg := diago.NewDiago(ua, diago.WithTransport(transport))
 
 	dg.Serve(ctx, func(inDialog *diago.DialogServerSession) {
-		// Handle incoming SIP dialog
-		inDialog.Trying()
-		inDialog.Answer()
-		fromHeader := inDialog.InviteRequest.Headers()
-
-		for _, header := range fromHeader {
-			if header.Name() == "From" {
-				fmt.Printf("Incoming call from: %s\n", extractCallerPhone(header.Value()))
-			}
-		}
-
-		playFile, err := os.Open("example.wav")
-		if err != nil {
-			fmt.Printf("Error opening audio file: %v\n", err)
-			return
-		}
-		defer playFile.Close()
-
-		pb, err := inDialog.PlaybackCreate()
-		if err != nil {
-			fmt.Printf("Error creating playback: %v\n", err)
-			return
-		}
-
-		_, err = pb.Play(playFile, "audio/wav")
-		if err != nil {
-			fmt.Printf("Error playing audio: %v\n", err)
-			return
-		}
-
-		fmt.Println("Call from ", extractCallerPhone(fromHeader[0].Value()), "answered, playing audio...")
+		handleIncomingCall(ctx, inDialog)
 	})
 }
 
-func extractCallerPhone(from string) string {
-	// Extract phone number from SIP From header assuming format <sip:number@domain>
-	if strings.HasPrefix(from, "<sip:") {
-		trimmed := strings.TrimPrefix(from, "<sip:")
-		parts := strings.Split(strings.TrimSuffix(trimmed, ">"), "@")
-		return parts[0]
-	} else {
-		fmt.Println("Invalid SIP From header format:", from)
+func handleIncomingCall(parentCtx context.Context, inDialog *diago.DialogServerSession) {
+	// Create unique call session
+	callCtx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	callerID := extractCallerPhone(inDialog.InviteRequest.Headers())
+
+	callSession := &CallSession{
+		ID:        generateCallID(),
+		CallerID:  callerID,
+		Dialog:    inDialog,
+		State:     StateConnecting,
+		IVRLevel:  globalConfig.InitialOptionId,
+		StartTime: time.Now(),
+		Context:   callCtx,
+		Cancel:    cancel,
 	}
-	return from
+
+	// Register call session
+	callsMutex.Lock()
+	activeCalls[callSession.ID] = callSession
+	callsMutex.Unlock()
+
+	// Clean up on exit
+	defer func() {
+		callsMutex.Lock()
+		delete(activeCalls, callSession.ID)
+		callsMutex.Unlock()
+		fmt.Printf("Call %s from %s ended\n", callSession.ID, callSession.CallerID)
+	}()
+
+	fmt.Printf("New call %s from %s\n", callSession.ID, callSession.CallerID)
+
+	// Answer the call
+	inDialog.Trying()
+	inDialog.Answer()
+
+	// Check if there's a disclaimer message to play
+	if globalConfig.RecordDisclaimerMessage != "" {
+		if err := playAudioFile(callSession, globalConfig.RecordDisclaimerMessage); err != nil {
+			fmt.Printf("Error playing disclaimer for call %s: %v\n", callSession.ID, err)
+		}
+	}
+
+	// Start IVR flow with the correct IVR config
+	callSession.State = StateIVR
+	if initialIVR, exists := ivrConfig[globalConfig.InitialOptionId]; exists {
+		handleIVRFlow(callSession, initialIVR)
+	} else {
+		fmt.Printf("No IVR config found for OptionId %d\n", globalConfig.InitialOptionId)
+		callSession.Dialog.Hangup(callSession.Context)
+	}
+}
+
+func routeCallToAction(session *CallSession, digit string) {
+	// Find the current IVR config first
+	currentIVR, exists := ivrConfig[session.IVRLevel]
+	if !exists {
+		fmt.Printf("Current IVR config not found for level %d\n", session.IVRLevel)
+		return
+	}
+
+	// Find the option in the current IVR that matches the digit
+	var selectedOption *config.Option
+	for _, option := range currentIVR.Options {
+		if strconv.Itoa(option.OptionNumber) == digit {
+			selectedOption = &option
+			break
+		}
+	}
+
+	if selectedOption == nil {
+		// Invalid selection
+		fmt.Printf("Invalid option %s selected\n", digit)
+		playAudioFile(session, currentIVR.InvalidOptionMessage)
+		handleIVRFlow(session, currentIVR)
+		return
+	}
+
+	action := selectedOption.OptionAction
+
+	// If the action is 0, hang up the call
+	if action == 0 {
+		fmt.Printf("Hanging up call %s\n", session.ID)
+		session.Dialog.Hangup(session.Context)
+		session.State = StateHangup
+		return
+	}
+
+	// Try to see if the action matches any IVR option
+	for _, ivr := range ivrConfig {
+		if ivr.OptionId == action {
+			session.IVRLevel = action // Update the IVR level
+			handleIVRFlow(session, ivr)
+			return
+		}
+	}
+
+	// If no matching IVR option, check queues
+	for _, queue := range queueConfig {
+		if queue.OptionId == action {
+			handleQueueLogic(session, queue)
+			return
+		}
+	}
+
+	// No matching action found
+	fmt.Printf("No action found for action %d\n", action)
+	playAudioFile(session, currentIVR.InvalidOptionMessage)
+	handleIVRFlow(session, currentIVR)
+}
+
+func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
+	// Play initial IVR menu
+	if err := playAudioFile(session, ivrConfig.WelcomeMessage); err != nil {
+		fmt.Printf("Error playing IVR menu for call %s: %v\n", session.ID, err)
+		return
+	}
+
+	// Listen for DTMF input with timeout
+	dtmfTimeout := 10 * time.Second
+	dtmfCtx, cancel := context.WithTimeout(session.Context, dtmfTimeout)
+	defer cancel()
+
+	dtmfChan := make(chan string, 1)
+	go listenForDTMF(session, dtmfChan)
+
+	select {
+	case digit := <-dtmfChan:
+		if digit == "" {
+			fmt.Printf("No DTMF digit received for call %s, playing timeout message\n", session.ID)
+		} else {
+			fmt.Printf("Received DTMF digit: %s for call %s\n", digit, session.ID)
+			routeCallToAction(session, digit)
+		}
+
+	case <-dtmfCtx.Done():
+		// Timeout - play timeout message and try again or hangup
+		playAudioFile(session, ivrConfig.TimeoutMessage)
+		handleIVRFlow(session, ivrConfig)
+	case <-session.Context.Done():
+		return
+	}
+}
+
+func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
+	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
+	defer queueTimer.Stop()
+	//Play hold music
+	if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
+		fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+		return
+	}
+
+	select {
+	case <-queueTimer.C:
+		// Simulate agent becoming available
+		fmt.Printf("Agent available for call %s\n", session.ID)
+		session.State = StateConnected
+		playAudioFile(session, "ringing.wav")
+		// Here you would actually connect to an agent
+
+	case <-session.Context.Done():
+		return
+	}
+}
+
+func playAudioFile(session *CallSession, filename string) error {
+	playFile, err := os.Open("./sounds/" + filename)
+	if err != nil {
+		return fmt.Errorf("error opening audio file %s: %v", filename, err)
+	}
+	defer playFile.Close()
+
+	pb, err := session.Dialog.PlaybackCreate()
+	if err != nil {
+		return fmt.Errorf("error creating playback: %v", err)
+	}
+
+	_, err = pb.Play(playFile, "audio/wav")
+	if err != nil {
+		return fmt.Errorf("error playing audio: %v", err)
+	}
+
+	return nil
+}
+
+func listenForDTMF(session *CallSession, dtmfChan chan<- string) {
+	reader := session.Dialog.AudioReaderDTMF()
+
+	err := reader.Listen(func(dtmf rune) error {
+		log.Printf("Received DTMF digit: %s", string(dtmf))
+		select {
+		case dtmfChan <- string(dtmf):
+		case <-session.Context.Done():
+			return session.Context.Err()
+		default:
+			// Channel is full, ignore
+		}
+		return nil
+	}, 10*time.Second)
+
+	if err != nil {
+		log.Printf("DTMF listening error for call %s: %v", session.ID, err)
+	}
+}
+
+func extractCallerPhone(headers []sip.Header) string {
+	for _, header := range headers {
+		if header.Name() == "From" {
+			from := header.Value()
+			if after, ok := strings.CutPrefix(from, "<sip:"); ok {
+				trimmed := after
+				parts := strings.Split(strings.TrimSuffix(trimmed, ">"), "@")
+				return parts[0]
+			}
+		}
+	}
+	return "unknown"
+}
+
+func generateCallID() string {
+	return fmt.Sprintf("call_%d", time.Now().UnixNano())
+}
+
+// Helper function to get active call count
+func getActiveCallCount() int {
+	callsMutex.RLock()
+	defer callsMutex.RUnlock()
+	return len(activeCalls)
+}
+
+// Helper function to get calls in specific state
+func getCallsInState(state CallState) []*CallSession {
+	callsMutex.RLock()
+	defer callsMutex.RUnlock()
+
+	var calls []*CallSession
+	for _, call := range activeCalls {
+		if call.State == state {
+			calls = append(calls, call)
+		}
+	}
+	return calls
 }
