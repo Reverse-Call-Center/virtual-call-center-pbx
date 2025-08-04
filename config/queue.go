@@ -2,7 +2,7 @@ package config
 
 import (
 	"encoding/json"
-	"log"
+	"fmt"
 	"os"
 )
 
@@ -20,18 +20,18 @@ type Queue struct {
 	AnnounceMessage string `json:"announce_message"`
 }
 
-// LoadQueueConfig Loads all the Queue configurations from the JSON file
-func LoadQueueConfig() *QueueConfig {
+// LoadQueueConfig loads all the Queue configurations from the JSON file
+func LoadQueueConfig() (*QueueConfig, error) {
 	file, err := os.Open("./configs/queue.json")
 	if err != nil {
-		log.Fatalf("error opening config file: %v", err)
+		return nil, fmt.Errorf("error opening config file: %v", err)
 	}
 	defer file.Close()
 
 	var config QueueConfig
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		log.Fatalf("error decoding config JSON: %v", err)
+		return nil, fmt.Errorf("error decoding config JSON: %v", err)
 	}
 
-	return &config
+	return &config, nil
 }

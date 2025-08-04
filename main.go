@@ -90,6 +90,25 @@ func initializeConfigs() {
 		fmt.Printf("Loading IVR: %v\n", ivr)
 		ivrConfig[ivr.OptionId] = ivr
 	}
+
+	// Load Queue config and handle error
+	queueConfigData, err := config.LoadQueueConfig()
+	if err != nil {
+		fmt.Printf("Error loading Queue config: %v\n", err)
+		return
+	}
+	for _, queue := range queueConfigData.Queues {
+		if queue.OptionId == 0 {
+			fmt.Printf("Skipping Queue with OptionId 0: %v\n", queue)
+			continue
+		}
+		if _, exists := queueConfig[queue.OptionId]; exists {
+			fmt.Printf("Duplicate Queue OptionId %d found, skipping: %v\n", queue.OptionId, queue)
+			continue
+		}
+		fmt.Printf("Loading Queue: %v\n", queue)
+		queueConfig[queue.OptionId] = queue
+	}
 }
 
 func startSIPServer(ctx context.Context) {
@@ -214,6 +233,7 @@ func routeCallToAction(session *CallSession, digit string) {
 
 	// If no matching IVR option, check queues
 	for _, queue := range queueConfig {
+		log.Printf("Checking queue %d for action %d\n", queue.OptionId, action)
 		if queue.OptionId == action {
 			handleQueueLogic(session, queue)
 			return
