@@ -1,0 +1,5 @@
+{
+    "sip_protocol": "udp",
+    "sip_port": 5060,
+    "sip_host": "127.0.0.1"
+}
