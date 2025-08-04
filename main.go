@@ -248,33 +248,70 @@ func routeCallToAction(session *CallSession, digit string) {
 
 func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 	// Play initial IVR menu
+	dtmfChan := make(chan string, 1)
+	dtmfDone := make(chan struct{})
+
+	// Start DTMF listener with proper cleanup
+	go func() {
+		defer close(dtmfDone)
+		listenForDTMF(session, dtmfChan)
+	}()
+
 	if err := playAudioFile(session, ivrConfig.WelcomeMessage); err != nil {
 		fmt.Printf("Error playing IVR menu for call %s: %v\n", session.ID, err)
 		return
 	}
 
-	// Listen for DTMF input with timeout
-	dtmfTimeout := 10 * time.Second
-	dtmfCtx, cancel := context.WithTimeout(session.Context, dtmfTimeout)
-	defer cancel()
+	// Use configured timeout or default
+	timeout := time.Duration(ivrConfig.Timeout) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second // Default timeout
+	}
 
-	dtmfChan := make(chan string, 1)
-	go listenForDTMF(session, dtmfChan)
+	// Create timer for IVR timeout (separate from DTMF timeout)
+	ivrTimer := time.NewTimer(timeout)
+	defer ivrTimer.Stop()
 
 	select {
 	case digit := <-dtmfChan:
-		if digit == "" {
-			fmt.Printf("No DTMF digit received for call %s, playing timeout message\n", session.ID)
-		} else {
-			fmt.Printf("Received DTMF digit: %s for call %s\n", digit, session.ID)
-			routeCallToAction(session, digit)
+		// Stop the timer since we got input
+		if !ivrTimer.Stop() {
+			<-ivrTimer.C
 		}
 
-	case <-dtmfCtx.Done():
-		// Timeout - play timeout message and try again or hangup
-		playAudioFile(session, ivrConfig.TimeoutMessage)
-		handleIVRFlow(session, ivrConfig)
+		if digit == "" {
+			fmt.Printf("Empty DTMF digit received for call %s\n", session.ID)
+			return
+		}
+
+		fmt.Printf("Received DTMF digit: %s for call %s\n", digit, session.ID)
+		routeCallToAction(session, digit)
+
+	case <-ivrTimer.C:
+		// IVR timeout - handle timeout action
+		fmt.Printf("IVR timeout for call %s\n", session.ID)
+
+		if ivrConfig.TimeoutMessage != "" {
+			playAudioFile(session, ivrConfig.TimeoutMessage)
+		}
+
+		if ivrConfig.TimeoutAction == 0 {
+			// Hang up on timeout
+			fmt.Printf("Hanging up call %s due to timeout\n", session.ID)
+			session.Dialog.Hangup(session.Context)
+			session.State = StateHangup
+		} else {
+			// Route to timeout action
+			routeCallToAction(session, strconv.Itoa(ivrConfig.TimeoutAction))
+		}
+
 	case <-session.Context.Done():
+		fmt.Printf("Call %s context cancelled during IVR\n", session.ID)
+		return
+
+	case <-dtmfDone:
+		// DTMF listener ended (possibly due to error)
+		fmt.Printf("DTMF listener ended for call %s\n", session.ID)
 		return
 	}
 }
@@ -325,18 +362,21 @@ func listenForDTMF(session *CallSession, dtmfChan chan<- string) {
 	reader := session.Dialog.AudioReaderDTMF()
 
 	err := reader.Listen(func(dtmf rune) error {
-		log.Printf("Received DTMF digit: %s", string(dtmf))
+		log.Printf("Received DTMF digit: %s for call %s", string(dtmf), session.ID)
 		select {
 		case dtmfChan <- string(dtmf):
+			// Successfully sent DTMF digit
+			return nil // Return nil to stop listening after first digit
 		case <-session.Context.Done():
 			return session.Context.Err()
 		default:
 			// Channel is full, ignore
+			log.Printf("DTMF channel full for call %s, ignoring digit %s", session.ID, string(dtmf))
 		}
 		return nil
-	}, 10*time.Second)
+	}, 30*time.Second) // Longer timeout for DTMF detection
 
-	if err != nil {
+	if err != nil && err != context.Canceled {
 		log.Printf("DTMF listening error for call %s: %v", session.ID, err)
 	}
 }
