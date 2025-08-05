@@ -286,6 +286,8 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 
 		fmt.Printf("Received DTMF digit: %s for call %s\n", digit, session.ID)
 		routeCallToAction(session, digit)
+		// Return here to clean up this IVR flow when moving to queue or another IVR
+		return
 
 	case <-ivrTimer.C:
 		// IVR timeout - handle timeout action
@@ -317,13 +319,20 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 }
 
 func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
+	fmt.Printf("Entering queue %d for call %s\n", queueConfig.OptionId, session.ID)
+	session.State = StateQueue
+	session.QueueID = queueConfig.OptionId
+
 	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
 	defer queueTimer.Stop()
+
 	//Play hold music
 	if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
 		fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
 		return
 	}
+
+	fmt.Printf("Call %s waiting in queue %d\n", session.ID, queueConfig.OptionId)
 
 	select {
 	case <-queueTimer.C:
@@ -334,6 +343,7 @@ func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
 		// Here you would actually connect to an agent
 
 	case <-session.Context.Done():
+		fmt.Printf("Call %s context cancelled while in queue\n", session.ID)
 		return
 	}
 }
@@ -366,7 +376,7 @@ func listenForDTMF(session *CallSession, dtmfChan chan<- string) {
 		select {
 		case dtmfChan <- string(dtmf):
 			// Successfully sent DTMF digit
-			return nil // Return nil to stop listening after first digit
+			return fmt.Errorf("dtmf received") // Return error to stop listening after first digit
 		case <-session.Context.Done():
 			return session.Context.Err()
 		default:
@@ -374,9 +384,9 @@ func listenForDTMF(session *CallSession, dtmfChan chan<- string) {
 			log.Printf("DTMF channel full for call %s, ignoring digit %s", session.ID, string(dtmf))
 		}
 		return nil
-	}, 30*time.Second) // Longer timeout for DTMF detection
+	}, 10*time.Second) // Reduced timeout for DTMF detection
 
-	if err != nil && err != context.Canceled {
+	if err != nil && err != context.Canceled && err.Error() != "dtmf received" {
 		log.Printf("DTMF listening error for call %s: %v", session.ID, err)
 	}
 }
