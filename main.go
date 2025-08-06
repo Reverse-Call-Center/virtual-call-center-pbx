@@ -161,10 +161,19 @@ func handleIncomingCall(parentCtx context.Context, inDialog *diago.DialogServerS
 		callsMutex.Lock()
 		delete(activeCalls, callSession.ID)
 		callsMutex.Unlock()
-		fmt.Printf("Call %s from %s ended\n", callSession.ID, callSession.CallerID)
+		if globalConfig.LogPhoneNumbers {
+			fmt.Printf("Call %s from %s ended\n", callSession.ID, callSession.CallerID)
+		} else {
+			fmt.Printf("Call %s ended\n", callSession.ID)
+		}
+
 	}()
 
-	fmt.Printf("New call %s from %s\n", callSession.ID, callSession.CallerID)
+	if globalConfig.LogPhoneNumbers {
+		fmt.Printf("New call %s from %s\n", callSession.ID, callSession.CallerID)
+	} else {
+		fmt.Printf("New call %s\n", callSession.ID)
+	}
 
 	// Answer the call
 	inDialog.Trying()

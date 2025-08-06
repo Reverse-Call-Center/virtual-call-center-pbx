@@ -12,6 +12,7 @@ type Config struct {
 	SIPListenAddress        string `json:"sip_listen_address"`
 	InitialOptionId         int    `json:"initial_option_id"`
 	RecordDisclaimerMessage string `json:"record_disclaimer_message"`
+	LogPhoneNumbers         bool   `json:"log_phone_numbers"`
 }
 
 func LoadConfig() (*Config, error) {

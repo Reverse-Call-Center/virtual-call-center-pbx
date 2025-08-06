@@ -3,5 +3,6 @@
     "sip_port": 5060,
     "sip_host": "127.0.0.1"
     "initial_option_id": 1000,
-    "record_disclaimer_message": "disclaimer.wav"
+    "record_disclaimer_message": "disclaimer.wav",
+    "log_phone_numbers": false
 }
