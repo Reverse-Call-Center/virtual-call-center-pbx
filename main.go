@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"net"
 	"os"
 	"os/signal"
 
+	"github.com/Reverse-Call-Center/virtual-call-center/agents"
 	"github.com/Reverse-Call-Center/virtual-call-center/config"
 	"github.com/Reverse-Call-Center/virtual-call-center/handlers"
+	pb "github.com/Reverse-Call-Center/virtual-call-center/proto"
 	"github.com/Reverse-Call-Center/virtual-call-center/server"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -23,5 +28,23 @@ func main() {
 	}
 
 	handlers.InitializeConfigs()
+
+	go startAgentServer()
+
 	server.StartSIPServer(ctx, config)
+}
+
+func startAgentServer() {
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	grpcServer := grpc.NewServer()
+	pb.RegisterAgentServiceServer(grpcServer, agents.NewAgentServer())
+
+	fmt.Println("Agent gRPC server listening on :50051")
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
+	}
 }

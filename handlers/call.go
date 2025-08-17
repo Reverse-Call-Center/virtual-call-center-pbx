@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Reverse-Call-Center/virtual-call-center/agents"
 	"github.com/Reverse-Call-Center/virtual-call-center/audio"
 	"github.com/Reverse-Call-Center/virtual-call-center/config"
 	"github.com/Reverse-Call-Center/virtual-call-center/types"
@@ -226,6 +227,8 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 	session.State = types.StateQueue
 	session.QueueID = queueConfig.OptionId
 
+	agents.GetManager().AddToQueue(queueConfig.OptionId, session)
+
 	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
 	defer queueTimer.Stop()
 
@@ -241,6 +244,10 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 			case <-holdMusicDone:
 				return
 			default:
+				if session.State == types.StateConnected || session.State == types.StateWithAgent {
+					return
+				}
+
 				if time.Since(lastAnnounceTime) >= time.Duration(queueConfig.AnnounceTime)*time.Second {
 					fmt.Printf("Playing announcement for call %s in queue %d\n", session.ID, queueConfig.OptionId)
 					if err := audio.PlayAudioFile(session, queueConfig.AnnounceMessage); err != nil {
@@ -262,17 +269,37 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 
 	select {
 	case <-queueTimer.C:
-		fmt.Printf("Agent available for call %s\n", session.ID)
-		session.State = types.StateConnected
-		audio.PlayAudioFile(session, "ringing.wav")
+		if session.State == types.StateQueue {
+			fmt.Printf("Queue timeout for call %s\n", session.ID)
+			session.State = types.StateConnected
+			audio.PlayAudioFile(session, "ringing.wav")
+		}
 
 	case <-session.Context.Done():
 		fmt.Printf("Call %s context cancelled while in queue\n", session.ID)
 		return
+	}
+
+	for session.State == types.StateConnected || session.State == types.StateWithAgent {
+		select {
+		case <-session.Context.Done():
+			if session.AgentExt != "" {
+				agents.GetManager().EndCall(session.AgentExt)
+			}
+			return
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }
 
 func GetIVRConfig(optionId int) (*config.Ivr, bool) {
 	ivr, exists := ivrConfig[optionId]
 	return ivr, exists
+}
+
+func AssignCallToAgent(session *types.CallSession, agentExt string) {
+	session.State = types.StateWithAgent
+	session.AgentExt = agentExt
+	fmt.Printf("Call %s assigned to agent %s\n", session.ID, agentExt)
 }

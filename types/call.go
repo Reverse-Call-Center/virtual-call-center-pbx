@@ -14,6 +14,7 @@ type CallSession struct {
 	State     CallState
 	IVRLevel  int
 	QueueID   int
+	AgentExt  string
 	StartTime time.Time
 	Context   context.Context
 	Cancel    context.CancelFunc
@@ -26,5 +27,6 @@ const (
 	StateIVR
 	StateQueue
 	StateConnected
+	StateWithAgent
 	StateHangup
 )
