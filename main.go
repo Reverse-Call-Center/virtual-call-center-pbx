@@ -334,12 +334,34 @@ func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
 
 	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
 	defer queueTimer.Stop()
+	lastAnnounceTime := time.Now()
 
-	//Play hold music
-	if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
-		fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
-		return
-	}
+	holdMusicDone := make(chan struct{})
+	go func() {
+		defer close(holdMusicDone)
+		for {
+			select {
+			case <-session.Context.Done():
+				return
+			case <-holdMusicDone:
+				return
+			default:
+				if time.Since(lastAnnounceTime) >= time.Duration(queueConfig.AnnounceTime)*time.Second {
+					fmt.Printf("Playing hold music for call %s in queue %d\n", session.ID, queueConfig.OptionId)
+					if err := playAudioFile(session, queueConfig.AnnounceMessage); err != nil {
+						fmt.Printf("Error playing announce message for call %s: %v\n", session.ID, err)
+					}
+
+					lastAnnounceTime = time.Now()
+					time.Sleep(1 * time.Second)
+				}
+				if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
+					fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+					return
+				}
+			}
+		}
+	}()
 
 	fmt.Printf("Call %s waiting in queue %d\n", session.ID, queueConfig.OptionId)
 
