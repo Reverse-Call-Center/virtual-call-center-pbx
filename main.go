@@ -249,10 +249,10 @@ func routeCallToAction(session *CallSession, digit string) {
 }
 
 func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
-	// Play initial IVR menu
 	dtmfChan := make(chan string, 1)
 	dtmfDone := make(chan struct{})
 	audioDone := make(chan struct{})
+	stopAudio := make(chan struct{})
 
 	go func() {
 		defer close(dtmfDone)
@@ -261,7 +261,7 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 
 	go func() {
 		defer close(audioDone)
-		if err := playAudioFile(session, ivrConfig.WelcomeMessage); err != nil {
+		if err := playAudioFileInterruptible(session, ivrConfig.WelcomeMessage, stopAudio); err != nil {
 			fmt.Printf("Error playing IVR welcome message for call %s: %v\n", session.ID, err)
 			return
 		}
@@ -269,7 +269,7 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 
 	timeout := time.Duration(ivrConfig.Timeout) * time.Second
 	if timeout <= 0 {
-		timeout = 30 * time.Second // Default timeout
+		timeout = 30 * time.Second
 	}
 
 	ivrTimer := time.NewTimer(timeout)
@@ -277,6 +277,7 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 
 	select {
 	case digit := <-dtmfChan:
+		close(stopAudio)
 		if !ivrTimer.Stop() {
 			<-ivrTimer.C
 		}
@@ -331,6 +332,7 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 		}
 
 	case <-ivrTimer.C:
+		close(stopAudio)
 		fmt.Printf("IVR timeout for call %s\n", session.ID)
 
 		if ivrConfig.TimeoutMessage != "" {
@@ -346,10 +348,12 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 		}
 
 	case <-session.Context.Done():
+		close(stopAudio)
 		fmt.Printf("Call %s context cancelled during IVR\n", session.ID)
 		return
 
 	case <-dtmfDone:
+		close(stopAudio)
 		fmt.Printf("DTMF listener ended for call %s\n", session.ID)
 		return
 	}
@@ -425,6 +429,34 @@ func playAudioFile(session *CallSession, filename string) error {
 	}
 
 	return nil
+}
+
+func playAudioFileInterruptible(session *CallSession, filename string, stopChan <-chan struct{}) error {
+	playFile, err := os.Open("./sounds/" + filename)
+	if err != nil {
+		return fmt.Errorf("error opening audio file %s: %v", filename, err)
+	}
+	defer playFile.Close()
+
+	pb, err := session.Dialog.PlaybackCreate()
+	if err != nil {
+		return fmt.Errorf("error creating playback: %v", err)
+	}
+
+	playDone := make(chan error, 1)
+	go func() {
+		_, err := pb.Play(playFile, "audio/wav")
+		playDone <- err
+	}()
+
+	select {
+	case err := <-playDone:
+		return err
+	case <-stopChan:
+		return nil
+	case <-session.Context.Done():
+		return session.Context.Err()
+	}
 }
 
 func listenForDTMF(session *CallSession, dtmfChan chan<- string) {
