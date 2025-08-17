@@ -366,11 +366,12 @@ func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
 
 	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
 	defer queueTimer.Stop()
-	lastAnnounceTime := time.Now()
 
 	holdMusicDone := make(chan struct{})
 	go func() {
 		defer close(holdMusicDone)
+		lastAnnounceTime := time.Now()
+
 		for {
 			select {
 			case <-session.Context.Done():
@@ -379,17 +380,17 @@ func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
 				return
 			default:
 				if time.Since(lastAnnounceTime) >= time.Duration(queueConfig.AnnounceTime)*time.Second {
-					fmt.Printf("Playing hold music for call %s in queue %d\n", session.ID, queueConfig.OptionId)
+					fmt.Printf("Playing announcement for call %s in queue %d\n", session.ID, queueConfig.OptionId)
 					if err := playAudioFile(session, queueConfig.AnnounceMessage); err != nil {
 						fmt.Printf("Error playing announce message for call %s: %v\n", session.ID, err)
 					}
-
 					lastAnnounceTime = time.Now()
 					time.Sleep(1 * time.Second)
-				}
-				if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
-					fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
-					return
+				} else {
+					if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
+						fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+						return
+					}
 				}
 			}
 		}
@@ -399,11 +400,9 @@ func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
 
 	select {
 	case <-queueTimer.C:
-		// Simulate agent becoming available
 		fmt.Printf("Agent available for call %s\n", session.ID)
 		session.State = StateConnected
 		playAudioFile(session, "ringing.wav")
-		// Here you would actually connect to an agent
 
 	case <-session.Context.Done():
 		fmt.Printf("Call %s context cancelled while in queue\n", session.ID)
