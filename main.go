@@ -350,7 +350,7 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 		return
 
 	case <-dtmfDone:
-]		fmt.Printf("DTMF listener ended for call %s\n", session.ID)
+		fmt.Printf("DTMF listener ended for call %s\n", session.ID)
 		return
 	}
 }
