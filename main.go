@@ -197,14 +197,12 @@ func handleIncomingCall(parentCtx context.Context, inDialog *diago.DialogServerS
 }
 
 func routeCallToAction(session *CallSession, digit string) {
-	// Find the current IVR config first
 	currentIVR, exists := ivrConfig[session.IVRLevel]
 	if !exists {
 		fmt.Printf("Current IVR config not found for level %d\n", session.IVRLevel)
 		return
 	}
 
-	// Find the option in the current IVR that matches the digit
 	var selectedOption *config.Option
 	for _, option := range currentIVR.Options {
 		if strconv.Itoa(option.OptionNumber) == digit {
@@ -214,7 +212,6 @@ func routeCallToAction(session *CallSession, digit string) {
 	}
 
 	if selectedOption == nil {
-		// Invalid selection
 		fmt.Printf("Invalid option %s selected\n", digit)
 		playAudioFile(session, currentIVR.InvalidOptionMessage)
 		handleIVRFlow(session, currentIVR)
@@ -223,7 +220,6 @@ func routeCallToAction(session *CallSession, digit string) {
 
 	action := selectedOption.OptionAction
 
-	// If the action is 0, hang up the call
 	if action == 0 {
 		fmt.Printf("Hanging up call %s\n", session.ID)
 		session.Dialog.Hangup(session.Context)
@@ -231,16 +227,14 @@ func routeCallToAction(session *CallSession, digit string) {
 		return
 	}
 
-	// Try to see if the action matches any IVR option
 	for _, ivr := range ivrConfig {
 		if ivr.OptionId == action {
-			session.IVRLevel = action // Update the IVR level
+			session.IVRLevel = action
 			handleIVRFlow(session, ivr)
 			return
 		}
 	}
 
-	// If no matching IVR option, check queues
 	for _, queue := range queueConfig {
 		log.Printf("Checking queue %d for action %d\n", queue.OptionId, action)
 		if queue.OptionId == action {
@@ -249,7 +243,6 @@ func routeCallToAction(session *CallSession, digit string) {
 		}
 	}
 
-	// No matching action found
 	fmt.Printf("No action found for action %d\n", action)
 	playAudioFile(session, currentIVR.InvalidOptionMessage)
 	handleIVRFlow(session, currentIVR)
@@ -259,31 +252,31 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 	// Play initial IVR menu
 	dtmfChan := make(chan string, 1)
 	dtmfDone := make(chan struct{})
+	audioDone := make(chan struct{})
 
-	// Start DTMF listener with proper cleanup
 	go func() {
 		defer close(dtmfDone)
 		listenForDTMF(session, dtmfChan)
 	}()
 
-	if err := playAudioFile(session, ivrConfig.WelcomeMessage); err != nil {
-		fmt.Printf("Error playing IVR menu for call %s: %v\n", session.ID, err)
-		return
-	}
+	go func() {
+		defer close(audioDone)
+		if err := playAudioFile(session, ivrConfig.WelcomeMessage); err != nil {
+			fmt.Printf("Error playing IVR welcome message for call %s: %v\n", session.ID, err)
+			return
+		}
+	}()
 
-	// Use configured timeout or default
 	timeout := time.Duration(ivrConfig.Timeout) * time.Second
 	if timeout <= 0 {
 		timeout = 30 * time.Second // Default timeout
 	}
 
-	// Create timer for IVR timeout (separate from DTMF timeout)
 	ivrTimer := time.NewTimer(timeout)
 	defer ivrTimer.Stop()
 
 	select {
 	case digit := <-dtmfChan:
-		// Stop the timer since we got input
 		if !ivrTimer.Stop() {
 			<-ivrTimer.C
 		}
@@ -295,11 +288,49 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 
 		fmt.Printf("Received DTMF digit: %s for call %s\n", digit, session.ID)
 		routeCallToAction(session, digit)
-		// Return here to clean up this IVR flow when moving to queue or another IVR
 		return
 
+	case <-audioDone:
+		select {
+		case digit := <-dtmfChan:
+			if !ivrTimer.Stop() {
+				<-ivrTimer.C
+			}
+
+			if digit == "" {
+				fmt.Printf("Empty DTMF digit received after audio for call %s\n", session.ID)
+				return
+			}
+			fmt.Printf("Received DTMF digit after audio: %s for call %s\n", digit, session.ID)
+			routeCallToAction(session, digit)
+			return
+
+		case <-ivrTimer.C:
+			fmt.Printf("IVR timeout for call %s\n", session.ID)
+
+			if ivrConfig.TimeoutMessage != "" {
+				playAudioFile(session, ivrConfig.TimeoutMessage)
+			}
+
+			if ivrConfig.TimeoutAction == 0 {
+				fmt.Printf("Hanging up call %s due to timeout\n", session.ID)
+				session.Dialog.Hangup(session.Context)
+				session.State = StateHangup
+			} else {
+				routeCallToAction(session, strconv.Itoa(ivrConfig.TimeoutAction))
+			}
+			return
+
+		case <-session.Context.Done():
+			fmt.Printf("Call %s context cancelled during IVR\n", session.ID)
+			return
+
+		case <-dtmfDone:
+			fmt.Printf("DTMF listener ended for call %s\n", session.ID)
+			return
+		}
+
 	case <-ivrTimer.C:
-		// IVR timeout - handle timeout action
 		fmt.Printf("IVR timeout for call %s\n", session.ID)
 
 		if ivrConfig.TimeoutMessage != "" {
@@ -307,12 +338,10 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 		}
 
 		if ivrConfig.TimeoutAction == 0 {
-			// Hang up on timeout
 			fmt.Printf("Hanging up call %s due to timeout\n", session.ID)
 			session.Dialog.Hangup(session.Context)
 			session.State = StateHangup
 		} else {
-			// Route to timeout action
 			routeCallToAction(session, strconv.Itoa(ivrConfig.TimeoutAction))
 		}
 
@@ -321,8 +350,7 @@ func handleIVRFlow(session *CallSession, ivrConfig *config.Ivr) {
 		return
 
 	case <-dtmfDone:
-		// DTMF listener ended (possibly due to error)
-		fmt.Printf("DTMF listener ended for call %s\n", session.ID)
+]		fmt.Printf("DTMF listener ended for call %s\n", session.ID)
 		return
 	}
 }
