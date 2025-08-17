@@ -385,12 +385,12 @@ func handleQueueLogic(session *CallSession, queueConfig *config.Queue) {
 						fmt.Printf("Error playing announce message for call %s: %v\n", session.ID, err)
 					}
 					lastAnnounceTime = time.Now()
-					time.Sleep(1 * time.Second)
-				} else {
-					if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
-						fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
-						return
-					}
+					time.Sleep(500 * time.Millisecond)
+				}
+
+				if err := playAudioFile(session, queueConfig.HoldMusic); err != nil {
+					fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+					return
 				}
 			}
 		}
