@@ -34,19 +34,21 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 		if err != nil {
 			return err
 		}
-
 		switch m := msg.Message.(type) {
 		case *pb.AgentMessage_Register:
 			extension = m.Register.Extension
+			log.Printf("Registering agent: Extension=%s, Name=%s", m.Register.Extension, m.Register.Name)
 			agent = GetManager().RegisterAgent(extension, m.Register.Name, stream)
-
+			log.Printf("Agent registration complete: %s", extension)
 		case *pb.AgentMessage_Audio:
 			if agent != nil && agent.CurrentCall != nil {
 				if err := s.handleAudioFromAgent(agent, m.Audio); err != nil {
 					log.Printf("Error handling audio from agent %s: %v", extension, err)
 				}
 			}
+
 		case *pb.AgentMessage_PullQueue:
+			log.Printf("Received PullQueue message from extension=%s, agent=%v", extension, agent != nil)
 			if agent != nil {
 				log.Printf("Agent %s attempting to pull from queue %d", extension, m.PullQueue.QueueId)
 				session := GetManager().PullFromQueue(extension, int(m.PullQueue.QueueId))
@@ -59,7 +61,7 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 					log.Printf("No call available for agent %s in queue %d", extension, m.PullQueue.QueueId)
 				}
 			} else {
-				log.Printf("Agent not registered, cannot pull from queue %d", m.PullQueue.QueueId)
+				log.Printf("Agent not registered, cannot pull from queue %d (extension='%s')", m.PullQueue.QueueId, extension)
 			}
 
 		case *pb.AgentMessage_Status:
