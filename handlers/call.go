@@ -232,7 +232,29 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
 	defer queueTimer.Stop()
 
+	// Channel to stop hold music when call is assigned to agent
+	stopHoldMusic := make(chan struct{})
 	holdMusicDone := make(chan struct{})
+	
+	// Monitor for agent assignment to stop hold music
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-session.Context.Done():
+				return
+			case <-ticker.C:
+				if session.State == types.StateWithAgent {
+					fmt.Printf("Call %s assigned to agent %s, stopping hold music\n", session.ID, session.AgentExt)
+					close(stopHoldMusic)
+					return
+				}
+			}
+		}
+	}()
+
 	go func() {
 		defer close(holdMusicDone)
 		lastAnnounceTime := time.Now()
@@ -240,11 +262,15 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 		for {
 			select {
 			case <-session.Context.Done():
+				fmt.Printf("Call %s context cancelled, stopping hold music\n", session.ID)
 				return
-			case <-holdMusicDone:
+			case <-stopHoldMusic:
+				fmt.Printf("Hold music stopped for call %s (agent assigned)\n", session.ID)
 				return
 			default:
+				// Double check state
 				if session.State == types.StateConnected || session.State == types.StateWithAgent {
+					fmt.Printf("Call %s state changed to %v, stopping hold music\n", session.ID, session.State)
 					return
 				}
 
@@ -280,10 +306,24 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 		return
 	}
 
+	// Wait for hold music to stop when agent is assigned
+	select {
+	case <-holdMusicDone:
+		fmt.Printf("Hold music ended for call %s\n", session.ID)
+	case <-session.Context.Done():
+		fmt.Printf("Call %s context cancelled while waiting for hold music to end\n", session.ID)
+		if session.AgentExt != "" {
+			agents.GetManager().EndCall(session.AgentExt)
+		}
+		return
+	}
+
+	// Keep call active while with agent
 	for session.State == types.StateConnected || session.State == types.StateWithAgent {
 		select {
 		case <-session.Context.Done():
 			if session.AgentExt != "" {
+				fmt.Printf("Call %s ended, cleaning up agent %s\n", session.ID, session.AgentExt)
 				agents.GetManager().EndCall(session.AgentExt)
 			}
 			return

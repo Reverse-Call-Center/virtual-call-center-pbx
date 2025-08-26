@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Reverse-Call-Center/virtual-call-center/audio"
 	pb "github.com/Reverse-Call-Center/virtual-call-center/proto"
 	"github.com/Reverse-Call-Center/virtual-call-center/types"
 )
@@ -122,9 +123,13 @@ func (am *AgentManager) EndCall(extension string) {
 	am.mutex.Lock()
 	defer am.mutex.Unlock()
 
-	if agent, exists := am.agents[extension]; exists {
+	if agent, exists := am.agents[extension]; exists {		if agent.CurrentCall != nil {
+			// Stop audio bridge when ending call
+			audio.StopAudioBridge(agent.CurrentCall.ID)
+		}
 		agent.CurrentCall = nil
 		agent.Status = pb.AgentStatus_AVAILABLE
+		fmt.Printf("Call ended for agent %s, status set to AVAILABLE\n", extension)
 	}
 }
 
@@ -158,7 +163,6 @@ func (am *AgentManager) SendAudioToAgent(extension string, callID string, audioD
 			},
 		},
 	}
-
 	return agent.Stream.Send(msg)
 }
 
@@ -181,5 +185,17 @@ func (am *AgentManager) AssignCallToAgent(extension string, session *types.CallS
 		},
 	}
 
-	return agent.Stream.Send(msg)
+	err := agent.Stream.Send(msg)
+	if err != nil {
+		return fmt.Errorf("failed to send call assignment to agent: %v", err)
+	}
+	// Start audio bridge for bidirectional audio
+	if err := audio.StartAudioBridge(session, extension); err != nil {
+		fmt.Printf("Warning: Failed to start audio bridge for call %s with agent %s: %v\n", session.ID, extension, err)
+		// Don't fail the call assignment due to audio bridge failure
+	}
+
+	return nil
 }
+
+

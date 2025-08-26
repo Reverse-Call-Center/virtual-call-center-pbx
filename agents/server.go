@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 
+	"github.com/Reverse-Call-Center/virtual-call-center/audio"
 	pb "github.com/Reverse-Call-Center/virtual-call-center/proto"
 )
 
@@ -83,17 +84,14 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 	}
 }
 
-func (s *Server) handleAudioFromAgent(agent *Agent, audio *pb.AudioData) error {
+func (s *Server) handleAudioFromAgent(agent *Agent, audioData *pb.AudioData) error {
 	if agent.CurrentCall == nil {
 		return fmt.Errorf("no active call")
 	}
 
-	// For now, just log the audio data received - you'll need to implement
-	// proper PCM to WAV conversion or use the appropriate format
 	log.Printf("Received %d bytes of PCM audio from agent %s for call %s",
-		len(audio.PcmData), agent.Extension, audio.CallId)
+		len(audioData.PcmData), agent.Extension, audioData.CallId)
 
-	// TODO: Convert PCM data to appropriate format and play
-	// This is a placeholder - you'll need to implement audio format conversion
-	return nil
+	// Send PCM data to SIP caller via audio bridge
+	return audio.SendPCMToSIP(audioData.CallId, audioData.PcmData)
 }
