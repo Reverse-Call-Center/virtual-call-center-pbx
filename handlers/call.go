@@ -235,12 +235,12 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 	// Channel to stop hold music when call is assigned to agent
 	stopHoldMusic := make(chan struct{})
 	holdMusicDone := make(chan struct{})
-	
+
 	// Monitor for agent assignment to stop hold music
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
-		
+
 		for {
 			select {
 			case <-session.Context.Done():
@@ -254,7 +254,6 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 			}
 		}
 	}()
-
 	go func() {
 		defer close(holdMusicDone)
 		lastAnnounceTime := time.Now()
@@ -276,15 +275,25 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 
 				if time.Since(lastAnnounceTime) >= time.Duration(queueConfig.AnnounceTime)*time.Second {
 					fmt.Printf("Playing announcement for call %s in queue %d\n", session.ID, queueConfig.OptionId)
-					if err := audio.PlayAudioFile(session, queueConfig.AnnounceMessage); err != nil {
+					if err := audio.PlayAudioFileInterruptible(session, queueConfig.AnnounceMessage, stopHoldMusic); err != nil {
 						fmt.Printf("Error playing announce message for call %s: %v\n", session.ID, err)
 					}
 					lastAnnounceTime = time.Now()
-					time.Sleep(500 * time.Millisecond)
+
+					// Check if we should stop after announcement
+					select {
+					case <-stopHoldMusic:
+						fmt.Printf("Hold music stopped during announcement for call %s\n", session.ID)
+						return
+					default:
+					}
 				}
 
-				if err := audio.PlayAudioFile(session, queueConfig.HoldMusic); err != nil {
-					fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+				// Use interruptible hold music that can be stopped immediately
+				if err := audio.PlayAudioFileInterruptible(session, queueConfig.HoldMusic, stopHoldMusic); err != nil {
+					if err != session.Context.Err() {
+						fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+					}
 					return
 				}
 			}
