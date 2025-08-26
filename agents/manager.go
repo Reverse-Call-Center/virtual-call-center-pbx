@@ -49,9 +49,9 @@ func (am *AgentManager) RegisterAgent(extension, name string, stream pb.AgentSer
 		Stream:       stream,
 		LastActivity: time.Now(),
 	}
-
 	am.agents[extension] = agent
-	fmt.Printf("Agent %s (%s) registered\n", name, extension)
+	fmt.Printf("Agent %s (%s) registered with status %v\n", name, extension, agent.Status)
+	fmt.Printf("DEBUG: Total agents registered: %d\n", len(am.agents))
 	return agent
 }
 
@@ -72,23 +72,40 @@ func (am *AgentManager) AddToQueue(queueID int, session *types.CallSession) {
 	am.mutex.Lock()
 	defer am.mutex.Unlock()
 
+	fmt.Printf("DEBUG: Adding call %s to queue %d\n", session.ID, queueID)
 	am.queueCalls[queueID] = append(am.queueCalls[queueID], session)
+	fmt.Printf("DEBUG: Queue %d now has %d calls\n", queueID, len(am.queueCalls[queueID]))
 }
 
 func (am *AgentManager) PullFromQueue(extension string, queueID int) *types.CallSession {
 	am.mutex.Lock()
 	defer am.mutex.Unlock()
 
+	fmt.Printf("DEBUG: PullFromQueue - Extension: %s, QueueID: %d\n", extension, queueID)
+
 	agent, exists := am.agents[extension]
-	if !exists || agent.Status != pb.AgentStatus_AVAILABLE {
+	if !exists {
+		fmt.Printf("DEBUG: Agent %s not found\n", extension)
+		return nil
+	}
+
+	if agent.Status != pb.AgentStatus_AVAILABLE {
+		fmt.Printf("DEBUG: Agent %s status is %v (not AVAILABLE)\n", extension, agent.Status)
 		return nil
 	}
 
 	calls, exists := am.queueCalls[queueID]
-	if !exists || len(calls) == 0 {
+	if !exists {
+		fmt.Printf("DEBUG: Queue %d does not exist\n", queueID)
 		return nil
 	}
 
+	if len(calls) == 0 {
+		fmt.Printf("DEBUG: Queue %d has no calls (length: %d)\n", queueID, len(calls))
+		return nil
+	}
+
+	fmt.Printf("DEBUG: Found %d calls in queue %d\n", len(calls), queueID)
 	session := calls[0]
 	am.queueCalls[queueID] = calls[1:]
 
@@ -97,6 +114,7 @@ func (am *AgentManager) PullFromQueue(extension string, queueID int) *types.Call
 	session.State = types.StateWithAgent
 	session.AgentExt = extension
 
+	fmt.Printf("DEBUG: Successfully assigned call %s to agent %s\n", session.ID, extension)
 	return session
 }
 
