@@ -35,6 +35,7 @@ func main() {
 }
 
 func startAgentServer() {
+	log.Printf("Starting gRPC agent server...")
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
@@ -43,7 +44,9 @@ func startAgentServer() {
 	grpcServer := grpc.NewServer()
 	pb.RegisterAgentServiceServer(grpcServer, agents.NewAgentServer())
 
-	fmt.Println("Agent gRPC server listening on :50051")
+	fmt.Printf("Agent gRPC server listening on :50051\n")
+	log.Printf("gRPC server configured and ready to accept connections")
+	
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}

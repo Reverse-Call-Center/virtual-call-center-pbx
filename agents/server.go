@@ -20,20 +20,29 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 	var agent *Agent
 	var extension string
 
+	log.Printf("New gRPC connection established")
+
 	defer func() {
+		log.Printf("gRPC connection closing for extension: %s", extension)
 		if agent != nil {
 			GetManager().UnregisterAgent(extension)
 		}
 	}()
 
 	for {
+		log.Printf("Waiting for message from client...")
 		msg, err := stream.Recv()
 		if err == io.EOF {
+			log.Printf("Client closed connection (EOF)")
 			return nil
 		}
 		if err != nil {
+			log.Printf("Error receiving message: %v", err)
 			return err
 		}
+
+		log.Printf("Received message type: %T", msg.Message)
+		
 		switch m := msg.Message.(type) {
 		case *pb.AgentMessage_Register:
 			extension = m.Register.Extension
