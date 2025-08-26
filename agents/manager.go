@@ -2,6 +2,7 @@ package agents
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -123,7 +124,8 @@ func (am *AgentManager) EndCall(extension string) {
 	am.mutex.Lock()
 	defer am.mutex.Unlock()
 
-	if agent, exists := am.agents[extension]; exists {		if agent.CurrentCall != nil {
+	if agent, exists := am.agents[extension]; exists {
+		if agent.CurrentCall != nil {
 			// Stop audio bridge when ending call
 			audio.StopAudioBridge(agent.CurrentCall.ID)
 		}
@@ -174,7 +176,6 @@ func (am *AgentManager) AssignCallToAgent(extension string, session *types.CallS
 	if !exists {
 		return fmt.Errorf("agent %s not found", extension)
 	}
-
 	msg := &pb.ServerMessage{
 		Message: &pb.ServerMessage_CallAssignment{
 			CallAssignment: &pb.CallAssignment{
@@ -184,6 +185,9 @@ func (am *AgentManager) AssignCallToAgent(extension string, session *types.CallS
 			},
 		},
 	}
+
+	log.Printf("Sending call assignment to agent %s: CallId=%s, CallerId=%s, QueueId=%d",
+		extension, session.ID, session.CallerID, queueID)
 
 	err := agent.Stream.Send(msg)
 	if err != nil {
@@ -197,5 +201,3 @@ func (am *AgentManager) AssignCallToAgent(extension string, session *types.CallS
 
 	return nil
 }
-
-

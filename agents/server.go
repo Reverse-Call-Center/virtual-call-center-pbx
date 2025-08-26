@@ -43,7 +43,7 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 		}
 
 		log.Printf("Received message type: %T", msg.Message)
-		
+
 		switch m := msg.Message.(type) {
 		case *pb.AgentMessage_Register:
 			extension = m.Register.Extension
@@ -92,6 +92,13 @@ func (s *Server) handleAudioFromAgent(agent *Agent, audioData *pb.AudioData) err
 	log.Printf("Received %d bytes of PCM audio from agent %s for call %s",
 		len(audioData.PcmData), agent.Extension, audioData.CallId)
 
-	// Send PCM data to SIP caller via audio bridge
-	return audio.SendPCMToSIP(audioData.CallId, audioData.PcmData)
+	// First try the call ID from the agent's message
+	err := audio.SendPCMToSIP(audioData.CallId, audioData.PcmData)
+	if err != nil {
+		// If that fails, try the agent's current call ID
+		log.Printf("Call ID %s not found, trying agent's current call %s", audioData.CallId, agent.CurrentCall.ID)
+		err = audio.SendPCMToSIP(agent.CurrentCall.ID, audioData.PcmData)
+	}
+
+	return err
 }
