@@ -28,9 +28,8 @@ type AudioBridge struct {
 	isActive       bool
 	stopChan       chan struct{}
 	mutex          sync.RWMutex
-	audioWriter    io.Writer
 	audioReader    io.Reader
-	pcmWriter      *StreamingPCMToWAVWriter
+	pcmPlayer      *StreamingPCMPlayer
 	readerActive   bool
 }
 
@@ -48,13 +47,7 @@ func StartAudioBridge(session *types.CallSession, agentExtension string) error {
 
 	// Check if bridge already exists
 	if _, exists := activeBridges[session.ID]; exists {
-		return fmt.Errorf("audio bridge already exists for call %s", session.ID)
-	}
-	// Get audio writer from dialog session
-	audioWriter, err := session.Dialog.AudioWriter()
-	if err != nil {
-		return fmt.Errorf("failed to get audio writer for call %s: %v", session.ID, err)
-	}
+		return fmt.Errorf("audio bridge already exists for call %s", session.ID)	}
 
 	// Get audio reader from dialog session
 	audioReader, err := session.Dialog.AudioReader()
@@ -62,14 +55,19 @@ func StartAudioBridge(session *types.CallSession, agentExtension string) error {
 		return fmt.Errorf("failed to get audio reader for call %s: %v", session.ID, err)
 	}
 
+	// Create the PCM player for streaming audio to SIP caller
+	pcmPlayer, err := NewStreamingPCMPlayer(session)
+	if err != nil {
+		return fmt.Errorf("failed to create PCM player for call %s: %v", session.ID, err)
+	}
+
 	bridge := &AudioBridge{
 		session:        session,
 		agentExtension: agentExtension,
 		isActive:       true,
 		stopChan:       make(chan struct{}),
-		audioWriter:    audioWriter,
 		audioReader:    audioReader,
-		pcmWriter:      NewStreamingPCMToWAVWriter(audioWriter),
+		pcmPlayer:      pcmPlayer,
 		readerActive:   false,
 	}
 
@@ -78,7 +76,7 @@ func StartAudioBridge(session *types.CallSession, agentExtension string) error {
 	// Start listening for audio from SIP caller to send to agent
 	go bridge.streamSIPToAgent()
 
-	log.Printf("Audio bridge started for call %s with bidirectional audio streaming", session.ID)
+	log.Printf("Audio bridge started for call %s with PCM player streaming", session.ID)
 	return nil
 }
 
@@ -96,6 +94,12 @@ func StopAudioBridge(callID string) {
 	if bridge.isActive {
 		bridge.isActive = false
 		close(bridge.stopChan)
+		
+		// Stop the PCM player
+		if bridge.pcmPlayer != nil {
+			bridge.pcmPlayer.Stop()
+		}
+		
 		log.Printf("Signaled stop for audio bridge %s", callID)
 	}
 	bridge.mutex.Unlock()
@@ -147,18 +151,18 @@ func SendPCMToSIPByAgent(agentExtension string, pcmData []byte) error {
 
 // streamPCMToSIP streams PCM audio data to the SIP caller
 func (bridge *AudioBridge) streamPCMToSIP(pcmData []byte) error {
-	if bridge.pcmWriter == nil {
-		return fmt.Errorf("PCM writer not initialized for call %s", bridge.session.ID)
+	if bridge.pcmPlayer == nil {
+		return fmt.Errorf("PCM player not initialized for call %s", bridge.session.ID)
 	}
 
-	// Write PCM data through the streaming WAV converter to the SIP session
-	n, err := bridge.pcmWriter.Write(pcmData)
+	// Write PCM data to the streaming player
+	err := bridge.pcmPlayer.WritePCM(pcmData)
 	if err != nil {
-		log.Printf("Error writing PCM data to SIP for call %s: %v", bridge.session.ID, err)
+		log.Printf("Error writing PCM data to player for call %s: %v", bridge.session.ID, err)
 		return err
 	}
 
-	log.Printf("Successfully streamed %d bytes of PCM audio to SIP caller for call %s", n, bridge.session.ID)
+	log.Printf("Successfully queued %d bytes of PCM audio for SIP caller for call %s", len(pcmData), bridge.session.ID)
 	return nil
 }
 

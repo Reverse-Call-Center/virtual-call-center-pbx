@@ -3,7 +3,13 @@ package audio
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"log"
+	"sync"
+
+	"github.com/Reverse-Call-Center/virtual-call-center/types"
+	"github.com/emiago/diago"
 )
 
 // PCMToWAV converts raw PCM data to WAV format
@@ -92,4 +98,139 @@ func (w *StreamingPCMToWAVWriter) Write(pcmData []byte) (int, error) {
 	n, err := w.writer.Write(pcmData)
 	w.totalBytes += n
 	return n, err
+}
+
+// StreamingPCMPlayer handles streaming PCM audio to SIP callers using the playback interface
+type StreamingPCMPlayer struct {
+	session    *types.CallSession
+	playback   diago.AudioPlayback
+	pipeReader *io.PipeReader
+	pipeWriter *io.PipeWriter
+	pcmBuffer  chan []byte
+	stopChan   chan struct{}
+	isActive   bool
+	mutex      sync.RWMutex
+}
+
+// NewStreamingPCMPlayer creates a new streaming PCM player for a SIP session
+func NewStreamingPCMPlayer(session *types.CallSession) (*StreamingPCMPlayer, error) {
+	playback, err := session.Dialog.PlaybackCreate()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create playback: %v", err)
+	}
+
+	pipeReader, pipeWriter := io.Pipe()
+	
+	player := &StreamingPCMPlayer{
+		session:    session,
+		playback:   playback,
+		pipeReader: pipeReader,
+		pipeWriter: pipeWriter,
+		pcmBuffer:  make(chan []byte, 100), // Buffer for PCM chunks
+		stopChan:   make(chan struct{}),
+		isActive:   true,
+	}
+
+	// Start the streaming goroutines
+	go player.streamProcessor()
+	go player.playbackHandler()
+
+	return player, nil
+}
+
+// streamProcessor converts PCM chunks to WAV format and writes to pipe
+func (p *StreamingPCMPlayer) streamProcessor() {
+	defer p.pipeWriter.Close()
+	
+	// Write WAV header once
+	headerWritten := false
+	
+	for {
+		select {
+		case <-p.stopChan:
+			return
+		case pcmData := <-p.pcmBuffer:
+			if !headerWritten {
+				// Write WAV header for streaming
+				wavHeader := p.createWAVHeader()
+				if _, err := p.pipeWriter.Write(wavHeader); err != nil {
+					log.Printf("Error writing WAV header: %v", err)
+					return
+				}
+				headerWritten = true
+			}
+			
+			// Write PCM data directly (it will be part of the WAV stream)
+			if _, err := p.pipeWriter.Write(pcmData); err != nil {
+				log.Printf("Error writing PCM data: %v", err)
+				return
+			}
+		}
+	}
+}
+
+// playbackHandler manages the playback interface
+func (p *StreamingPCMPlayer) playbackHandler() {
+	// Start playing the WAV stream from the pipe
+	_, err := p.playback.Play(p.pipeReader, "audio/wav")
+	if err != nil {
+		log.Printf("Error in playback: %v", err)
+	}
+}
+
+// WritePCM writes PCM data to the streaming player
+func (p *StreamingPCMPlayer) WritePCM(pcmData []byte) error {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+	
+	if !p.isActive {
+		return fmt.Errorf("streaming player is not active")
+	}
+	
+	select {
+	case p.pcmBuffer <- pcmData:
+		return nil
+	default:
+		// Buffer full, drop the audio chunk
+		log.Printf("PCM buffer full, dropping audio chunk of %d bytes", len(pcmData))
+		return nil
+	}
+}
+
+// Stop stops the streaming player
+func (p *StreamingPCMPlayer) Stop() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	
+	if p.isActive {
+		p.isActive = false
+		close(p.stopChan)
+		p.pipeWriter.Close()
+	}
+}
+
+// createWAVHeader creates a WAV header for streaming audio
+func (p *StreamingPCMPlayer) createWAVHeader() []byte {
+	var buf bytes.Buffer
+	
+	// RIFF header
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(0xFFFFFFFF-8)) // Max file size for streaming
+	buf.WriteString("WAVE")
+
+	// Format chunk
+	buf.WriteString("fmt ")
+	binary.Write(&buf, binary.LittleEndian, uint32(16))    // Chunk size
+	binary.Write(&buf, binary.LittleEndian, uint16(1))     // Audio format (PCM)
+	binary.Write(&buf, binary.LittleEndian, uint16(1))     // Number of channels (mono)
+	binary.Write(&buf, binary.LittleEndian, uint32(8000))  // Sample rate
+	binary.Write(&buf, binary.LittleEndian, uint32(16000)) // Byte rate
+	binary.Write(&buf, binary.LittleEndian, uint16(2))     // Block align
+	binary.Write(&buf, binary.LittleEndian, uint16(16))    // Bits per sample
+
+	// Data chunk header
+	buf.WriteString("data")
+	binary.Write(&buf, binary.LittleEndian, uint32(0xFFFFFFFF)) // Max data size for streaming
+
+	return buf.Bytes()
 }
