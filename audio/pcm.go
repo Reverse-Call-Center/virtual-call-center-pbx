@@ -120,7 +120,7 @@ func NewStreamingPCMPlayer(session *types.CallSession) (*StreamingPCMPlayer, err
 	}
 
 	pipeReader, pipeWriter := io.Pipe()
-	
+
 	player := &StreamingPCMPlayer{
 		session:    session,
 		playback:   playback,
@@ -141,10 +141,10 @@ func NewStreamingPCMPlayer(session *types.CallSession) (*StreamingPCMPlayer, err
 // streamProcessor converts PCM chunks to WAV format and writes to pipe
 func (p *StreamingPCMPlayer) streamProcessor() {
 	defer p.pipeWriter.Close()
-	
+
 	// Write WAV header once
 	headerWritten := false
-	
+
 	for {
 		select {
 		case <-p.stopChan:
@@ -159,7 +159,7 @@ func (p *StreamingPCMPlayer) streamProcessor() {
 				}
 				headerWritten = true
 			}
-			
+
 			// Write PCM data directly (it will be part of the WAV stream)
 			if _, err := p.pipeWriter.Write(pcmData); err != nil {
 				log.Printf("Error writing PCM data: %v", err)
@@ -182,11 +182,11 @@ func (p *StreamingPCMPlayer) playbackHandler() {
 func (p *StreamingPCMPlayer) WritePCM(pcmData []byte) error {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
-	
+
 	if !p.isActive {
 		return fmt.Errorf("streaming player is not active")
 	}
-	
+
 	select {
 	case p.pcmBuffer <- pcmData:
 		return nil
@@ -201,7 +201,7 @@ func (p *StreamingPCMPlayer) WritePCM(pcmData []byte) error {
 func (p *StreamingPCMPlayer) Stop() {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	
+
 	if p.isActive {
 		p.isActive = false
 		close(p.stopChan)
@@ -212,7 +212,7 @@ func (p *StreamingPCMPlayer) Stop() {
 // createWAVHeader creates a WAV header for streaming audio
 func (p *StreamingPCMPlayer) createWAVHeader() []byte {
 	var buf bytes.Buffer
-	
+
 	// RIFF header
 	buf.WriteString("RIFF")
 	binary.Write(&buf, binary.LittleEndian, uint32(0xFFFFFFFF-8)) // Max file size for streaming
@@ -233,4 +233,60 @@ func (p *StreamingPCMPlayer) createWAVHeader() []byte {
 	binary.Write(&buf, binary.LittleEndian, uint32(0xFFFFFFFF)) // Max data size for streaming
 
 	return buf.Bytes()
+}
+
+// Simple PCM player that sends raw PCM data directly
+type SimplePCMPlayer struct {
+	session  *types.CallSession
+	playback diago.AudioPlayback
+	isActive bool
+	mutex    sync.RWMutex
+}
+
+// NewSimplePCMPlayer creates a simple PCM player that sends raw PCM
+func NewSimplePCMPlayer(session *types.CallSession) (*SimplePCMPlayer, error) {
+	playback, err := session.Dialog.PlaybackCreate()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create playback: %v", err)
+	}
+
+	return &SimplePCMPlayer{
+		session:  session,
+		playback: playback,
+		isActive: true,
+	}, nil
+}
+
+// PlayPCMChunk plays a chunk of raw PCM data
+func (p *SimplePCMPlayer) PlayPCMChunk(pcmData []byte) error {
+	p.mutex.RLock()
+	defer p.mutex.RUnlock()
+
+	if !p.isActive {
+		return fmt.Errorf("player not active")
+	}
+
+	// Create reader from raw PCM data (no WAV conversion)
+	reader := bytes.NewReader(pcmData)
+	
+	// Try playing as raw PCM
+	_, err := p.playback.Play(reader, "audio/pcm")
+	if err != nil {
+		// If PCM doesn't work, try with basic audio format
+		reader = bytes.NewReader(pcmData)
+		_, err = p.playback.Play(reader, "audio/basic")
+		if err != nil {
+			log.Printf("Failed to play both PCM and basic audio: %v", err)
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Stop stops the PCM player
+func (p *SimplePCMPlayer) Stop() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.isActive = false
 }

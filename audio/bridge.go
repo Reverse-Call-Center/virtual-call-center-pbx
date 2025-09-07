@@ -47,7 +47,8 @@ func StartAudioBridge(session *types.CallSession, agentExtension string) error {
 
 	// Check if bridge already exists
 	if _, exists := activeBridges[session.ID]; exists {
-		return fmt.Errorf("audio bridge already exists for call %s", session.ID)	}
+		return fmt.Errorf("audio bridge already exists for call %s", session.ID)
+	}
 
 	// Get audio reader from dialog session
 	audioReader, err := session.Dialog.AudioReader()
@@ -94,12 +95,12 @@ func StopAudioBridge(callID string) {
 	if bridge.isActive {
 		bridge.isActive = false
 		close(bridge.stopChan)
-		
+
 		// Stop the PCM player
 		if bridge.pcmPlayer != nil {
 			bridge.pcmPlayer.Stop()
 		}
-		
+
 		log.Printf("Signaled stop for audio bridge %s", callID)
 	}
 	bridge.mutex.Unlock()
@@ -154,6 +155,10 @@ func (bridge *AudioBridge) streamPCMToSIP(pcmData []byte) error {
 	if bridge.pcmPlayer == nil {
 		return fmt.Errorf("PCM player not initialized for call %s", bridge.session.ID)
 	}
+
+	// Add debugging info about the PCM data
+	log.Printf("DEBUG: Received PCM data - Length: %d bytes, First 8 bytes: %v", 
+		len(pcmData), pcmData[:min(8, len(pcmData))])
 
 	// Write PCM data to the streaming player
 	err := bridge.pcmPlayer.WritePCM(pcmData)
