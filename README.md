@@ -1,4 +1,4 @@
-# Virtual Call Center
+# Virtual Call Center PBX
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache-green.svg)](LICENSE)
