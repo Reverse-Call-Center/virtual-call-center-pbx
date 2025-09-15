@@ -15,7 +15,7 @@ import (
 	"github.com/emiago/sipgo"
 )
 
-func StartSIPServer(ctx context.Context, globalConfig *config.Config) {
+func StartSIPServer(ctx context.Context, globalConfig *config.Config, onStarted ...func()) {
 	fmt.Println("Starting SIP server on:", globalConfig.SIPProtocol, globalConfig.SIPListenAddress, ":", globalConfig.SIPPort)
 
 	transport := diago.Transport{
@@ -31,6 +31,10 @@ func StartSIPServer(ctx context.Context, globalConfig *config.Config) {
 	}
 
 	dg := diago.NewDiago(ua, diago.WithTransport(transport))
+
+	if len(onStarted) > 0 && onStarted[0] != nil {
+		onStarted[0]()
+	}
 
 	dg.Serve(ctx, func(inDialog *diago.DialogServerSession) {
 		HandleIncomingCall(ctx, inDialog, globalConfig)
