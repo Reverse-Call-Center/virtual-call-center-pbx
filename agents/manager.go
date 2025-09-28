@@ -149,13 +149,21 @@ func (am *AgentManager) GetAvailableAgents() []*Agent {
 }
 
 func (am *AgentManager) SendAudioToAgent(extension string, callID string, audioData []byte) error {
+	log.Printf("[AGENT-MANAGER-DEBUG] SIP->Agent: Attempting to send %d bytes to agent %s for call %s",
+		len(audioData), extension, callID)
+
 	am.mutex.RLock()
 	agent, exists := am.agents[extension]
 	am.mutex.RUnlock()
 
 	if !exists {
+		log.Printf("[AGENT-MANAGER-ERROR] SIP->Agent: Agent %s not found (available agents: %d)",
+			extension, len(am.agents))
 		return fmt.Errorf("agent %s not found", extension)
 	}
+
+	log.Printf("[AGENT-MANAGER-DEBUG] SIP->Agent: Found agent %s, preparing gRPC message with %d bytes",
+		extension, len(audioData))
 
 	msg := &pb.ServerMessage{
 		Message: &pb.ServerMessage_Audio{
@@ -165,7 +173,17 @@ func (am *AgentManager) SendAudioToAgent(extension string, callID string, audioD
 			},
 		},
 	}
-	return agent.Stream.Send(msg)
+
+	log.Printf("[AGENT-MANAGER-DEBUG] SIP->Agent: Sending gRPC audio message to agent %s stream", extension)
+	err := agent.Stream.Send(msg)
+	if err != nil {
+		log.Printf("[AGENT-MANAGER-ERROR] SIP->Agent: Failed to send %d bytes to agent %s: %v",
+			len(audioData), extension, err)
+	} else {
+		log.Printf("[AGENT-MANAGER-DEBUG] SIP->Agent: Successfully sent %d bytes to agent %s for call %s",
+			len(audioData), extension, callID)
+	}
+	return err
 }
 
 func (am *AgentManager) AssignCallToAgent(extension string, session *types.CallSession, queueID int) error {
@@ -194,9 +212,14 @@ func (am *AgentManager) AssignCallToAgent(extension string, session *types.CallS
 		return fmt.Errorf("failed to send call assignment to agent: %v", err)
 	}
 	// Start audio bridge for bidirectional audio
+	log.Printf("[AGENT-MANAGER-DEBUG] Starting audio bridge for call %s with agent %s", session.ID, extension)
 	if err := audio.StartAudioBridge(session, extension); err != nil {
-		fmt.Printf("Warning: Failed to start audio bridge for call %s with agent %s: %v\n", session.ID, extension, err)
+		log.Printf("[AGENT-MANAGER-ERROR] Failed to start audio bridge for call %s with agent %s: %v",
+			session.ID, extension, err)
 		// Don't fail the call assignment due to audio bridge failure
+	} else {
+		log.Printf("[AGENT-MANAGER-DEBUG] Successfully started audio bridge for call %s with agent %s",
+			session.ID, extension)
 	}
 
 	return nil

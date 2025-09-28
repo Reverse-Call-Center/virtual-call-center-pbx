@@ -51,9 +51,20 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 			agent = GetManager().RegisterAgent(extension, m.Register.Name, stream)
 			log.Printf("Agent registration complete: %s", extension)
 		case *pb.AgentMessage_Audio:
+			log.Printf("[AGENT-AUDIO-DEBUG] Received audio message from agent %s", extension)
 			if agent != nil && agent.CurrentCall != nil {
+				log.Printf("[AGENT-AUDIO-DEBUG] Agent %s has active call %s, processing %d bytes of audio",
+					extension, agent.CurrentCall.ID, len(m.Audio.PcmData))
 				if err := s.handleAudioFromAgent(agent, m.Audio); err != nil {
-					log.Printf("Error handling audio from agent %s: %v", extension, err)
+					log.Printf("[AGENT-AUDIO-ERROR] Error handling audio from agent %s: %v", extension, err)
+				} else {
+					log.Printf("[AGENT-AUDIO-DEBUG] Successfully processed audio from agent %s", extension)
+				}
+			} else {
+				if agent == nil {
+					log.Printf("[AGENT-AUDIO-ERROR] Cannot process audio: agent %s not registered", extension)
+				} else {
+					log.Printf("[AGENT-AUDIO-ERROR] Cannot process audio: agent %s has no active call", extension)
 				}
 			}
 
@@ -86,18 +97,39 @@ func (s *Server) Connect(stream pb.AgentService_ConnectServer) error {
 
 func (s *Server) handleAudioFromAgent(agent *Agent, audioData *pb.AudioData) error {
 	if agent.CurrentCall == nil {
+		log.Printf("[AGENT-AUDIO-ERROR] Agent %s has no active call for audio processing", agent.Extension)
 		return fmt.Errorf("no active call")
 	}
 
-	log.Printf("Received %d bytes of PCM audio from agent %s for call %s",
-		len(audioData.PcmData), agent.Extension, audioData.CallId)
+	log.Printf("[AGENT-AUDIO-DEBUG] Agent->SIP: Processing %d bytes of PCM audio from agent %s for call %s (claimed callId: %s)",
+		len(audioData.PcmData), agent.Extension, agent.CurrentCall.ID, audioData.CallId)
+
+	// Log PCM characteristics for debugging
+	if len(audioData.PcmData) >= 8 {
+		log.Printf("[AGENT-AUDIO-DEBUG] Agent->SIP PCM details - First 8 bytes: %v, Last 8 bytes: %v",
+			audioData.PcmData[:8], audioData.PcmData[len(audioData.PcmData)-8:])
+	} else if len(audioData.PcmData) > 0 {
+		log.Printf("[AGENT-AUDIO-DEBUG] Agent->SIP short PCM packet: %v", audioData.PcmData)
+	}
 
 	// First try the call ID from the agent's message
+	log.Printf("[AGENT-AUDIO-DEBUG] Agent->SIP: Attempting to send audio using call ID from message: %s", audioData.CallId)
 	err := audio.SendPCMToSIP(audioData.CallId, audioData.PcmData)
 	if err != nil {
 		// If that fails, try the agent's current call ID
-		log.Printf("Call ID %s not found, trying agent's current call %s", audioData.CallId, agent.CurrentCall.ID)
+		log.Printf("[AGENT-AUDIO-DEBUG] Agent->SIP: Call ID %s not found, trying agent's current call %s",
+			audioData.CallId, agent.CurrentCall.ID)
 		err = audio.SendPCMToSIP(agent.CurrentCall.ID, audioData.PcmData)
+		if err != nil {
+			log.Printf("[AGENT-AUDIO-ERROR] Agent->SIP: Failed to send audio for both call IDs - message ID: %s, current ID: %s, error: %v",
+				audioData.CallId, agent.CurrentCall.ID, err)
+		} else {
+			log.Printf("[AGENT-AUDIO-DEBUG] Agent->SIP: Successfully sent %d bytes using agent's current call ID %s",
+				len(audioData.PcmData), agent.CurrentCall.ID)
+		}
+	} else {
+		log.Printf("[AGENT-AUDIO-DEBUG] Agent->SIP: Successfully sent %d bytes using message call ID %s",
+			len(audioData.PcmData), audioData.CallId)
 	}
 
 	return err

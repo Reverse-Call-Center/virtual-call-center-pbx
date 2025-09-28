@@ -114,12 +114,17 @@ type StreamingPCMPlayer struct {
 
 // NewStreamingPCMPlayer creates a new streaming PCM player for a SIP session
 func NewStreamingPCMPlayer(session *types.CallSession) (*StreamingPCMPlayer, error) {
+	log.Printf("[PCM-DEBUG] Creating new streaming PCM player for call %s", session.ID)
+
 	playback, err := session.Dialog.PlaybackCreate()
 	if err != nil {
+		log.Printf("[PCM-ERROR] Failed to create playback for call %s: %v", session.ID, err)
 		return nil, fmt.Errorf("failed to create playback: %v", err)
 	}
+	log.Printf("[PCM-DEBUG] Successfully created playback interface for call %s", session.ID)
 
 	pipeReader, pipeWriter := io.Pipe()
+	log.Printf("[PCM-DEBUG] Created pipe for streaming PCM data for call %s", session.ID)
 
 	player := &StreamingPCMPlayer{
 		session:    session,
@@ -131,39 +136,59 @@ func NewStreamingPCMPlayer(session *types.CallSession) (*StreamingPCMPlayer, err
 		isActive:   true,
 	}
 
+	log.Printf("[PCM-DEBUG] Starting streaming goroutines for call %s (buffer size: 100)", session.ID)
 	// Start the streaming goroutines
 	go player.streamProcessor()
 	go player.playbackHandler()
+
+	log.Printf("[PCM-DEBUG] StreamingPCMPlayer successfully created for call %s", session.ID)
 
 	return player, nil
 }
 
 // streamProcessor converts PCM chunks to WAV format and writes to pipe
 func (p *StreamingPCMPlayer) streamProcessor() {
-	defer p.pipeWriter.Close()
+	log.Printf("[PCM-DEBUG] Starting stream processor for call %s", p.session.ID)
+	defer func() {
+		log.Printf("[PCM-DEBUG] Stream processor stopping for call %s", p.session.ID)
+		p.pipeWriter.Close()
+	}()
 
 	// Write WAV header once
 	headerWritten := false
+	chunksProcessed := 0
 
 	for {
 		select {
 		case <-p.stopChan:
+			log.Printf("[PCM-DEBUG] Stream processor received stop signal for call %s (processed %d chunks)",
+				p.session.ID, chunksProcessed)
 			return
 		case pcmData := <-p.pcmBuffer:
+			chunksProcessed++
+			log.Printf("[PCM-DEBUG] Processing PCM chunk #%d (%d bytes) for call %s",
+				chunksProcessed, len(pcmData), p.session.ID)
+
 			if !headerWritten {
 				// Write WAV header for streaming
+				log.Printf("[PCM-DEBUG] Writing WAV header for call %s", p.session.ID)
 				wavHeader := p.createWAVHeader()
 				if _, err := p.pipeWriter.Write(wavHeader); err != nil {
-					log.Printf("Error writing WAV header: %v", err)
+					log.Printf("[PCM-ERROR] Error writing WAV header for call %s: %v", p.session.ID, err)
 					return
 				}
 				headerWritten = true
+				log.Printf("[PCM-DEBUG] WAV header written (%d bytes) for call %s", len(wavHeader), p.session.ID)
 			}
 
 			// Write PCM data directly (it will be part of the WAV stream)
 			if _, err := p.pipeWriter.Write(pcmData); err != nil {
-				log.Printf("Error writing PCM data: %v", err)
+				log.Printf("[PCM-ERROR] Error writing PCM chunk #%d (%d bytes) for call %s: %v",
+					chunksProcessed, len(pcmData), p.session.ID, err)
 				return
+			} else {
+				log.Printf("[PCM-DEBUG] Successfully wrote PCM chunk #%d (%d bytes) for call %s",
+					chunksProcessed, len(pcmData), p.session.ID)
 			}
 		}
 	}
@@ -171,10 +196,13 @@ func (p *StreamingPCMPlayer) streamProcessor() {
 
 // playbackHandler manages the playback interface
 func (p *StreamingPCMPlayer) playbackHandler() {
+	log.Printf("[PCM-DEBUG] Starting playback handler for call %s", p.session.ID)
 	// Start playing the WAV stream from the pipe
 	_, err := p.playback.Play(p.pipeReader, "audio/wav")
 	if err != nil {
-		log.Printf("Error in playback: %v", err)
+		log.Printf("[PCM-ERROR] Playback error for call %s: %v", p.session.ID, err)
+	} else {
+		log.Printf("[PCM-DEBUG] Playback completed for call %s", p.session.ID)
 	}
 }
 
@@ -184,15 +212,23 @@ func (p *StreamingPCMPlayer) WritePCM(pcmData []byte) error {
 	defer p.mutex.RUnlock()
 
 	if !p.isActive {
+		log.Printf("[PCM-ERROR] Attempted to write %d bytes to inactive streaming player for call %s",
+			len(pcmData), p.session.ID)
 		return fmt.Errorf("streaming player is not active")
 	}
 
+	log.Printf("[PCM-DEBUG] WritePCM called with %d bytes for call %s (buffer len: %d/%d)",
+		len(pcmData), p.session.ID, len(p.pcmBuffer), cap(p.pcmBuffer))
+
 	select {
 	case p.pcmBuffer <- pcmData:
+		log.Printf("[PCM-DEBUG] Successfully queued %d bytes in PCM buffer for call %s (buffer now: %d/%d)",
+			len(pcmData), p.session.ID, len(p.pcmBuffer), cap(p.pcmBuffer))
 		return nil
 	default:
 		// Buffer full, drop the audio chunk
-		log.Printf("PCM buffer full, dropping audio chunk of %d bytes", len(pcmData))
+		log.Printf("[PCM-WARNING] PCM buffer full (%d/%d), dropping audio chunk of %d bytes for call %s",
+			len(p.pcmBuffer), cap(p.pcmBuffer), len(pcmData), p.session.ID)
 		return nil
 	}
 }
@@ -203,9 +239,14 @@ func (p *StreamingPCMPlayer) Stop() {
 	defer p.mutex.Unlock()
 
 	if p.isActive {
+		log.Printf("[PCM-DEBUG] Stopping streaming PCM player for call %s (buffer len: %d)",
+			p.session.ID, len(p.pcmBuffer))
 		p.isActive = false
 		close(p.stopChan)
 		p.pipeWriter.Close()
+		log.Printf("[PCM-DEBUG] Streaming PCM player stopped for call %s", p.session.ID)
+	} else {
+		log.Printf("[PCM-DEBUG] Streaming PCM player already stopped for call %s", p.session.ID)
 	}
 }
 
@@ -268,7 +309,7 @@ func (p *SimplePCMPlayer) PlayPCMChunk(pcmData []byte) error {
 
 	// Create reader from raw PCM data (no WAV conversion)
 	reader := bytes.NewReader(pcmData)
-	
+
 	// Try playing as raw PCM
 	_, err := p.playback.Play(reader, "audio/pcm")
 	if err != nil {
