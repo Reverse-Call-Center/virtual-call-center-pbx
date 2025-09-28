@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Reverse-Call-Center/virtual-call-center/agents"
 	"github.com/Reverse-Call-Center/virtual-call-center/audio"
 	"github.com/Reverse-Call-Center/virtual-call-center/config"
 	"github.com/Reverse-Call-Center/virtual-call-center/types"
@@ -226,10 +227,33 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 	session.State = types.StateQueue
 	session.QueueID = queueConfig.OptionId
 
+	agents.GetManager().AddToQueue(queueConfig.OptionId, session)
+
 	queueTimer := time.NewTimer(time.Duration(queueConfig.Timeout) * time.Second)
 	defer queueTimer.Stop()
 
+	// Channel to stop hold music when call is assigned to agent
+	stopHoldMusic := make(chan struct{})
 	holdMusicDone := make(chan struct{})
+
+	// Monitor for agent assignment to stop hold music
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-session.Context.Done():
+				return
+			case <-ticker.C:
+				if session.State == types.StateWithAgent {
+					fmt.Printf("Call %s assigned to agent %s, stopping hold music\n", session.ID, session.AgentExt)
+					close(stopHoldMusic)
+					return
+				}
+			}
+		}
+	}()
 	go func() {
 		defer close(holdMusicDone)
 		lastAnnounceTime := time.Now()
@@ -237,21 +261,39 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 		for {
 			select {
 			case <-session.Context.Done():
+				fmt.Printf("Call %s context cancelled, stopping hold music\n", session.ID)
 				return
-			case <-holdMusicDone:
+			case <-stopHoldMusic:
+				fmt.Printf("Hold music stopped for call %s (agent assigned)\n", session.ID)
 				return
 			default:
+				// Double check state
+				if session.State == types.StateConnected || session.State == types.StateWithAgent {
+					fmt.Printf("Call %s state changed to %v, stopping hold music\n", session.ID, session.State)
+					return
+				}
+
 				if time.Since(lastAnnounceTime) >= time.Duration(queueConfig.AnnounceTime)*time.Second {
 					fmt.Printf("Playing announcement for call %s in queue %d\n", session.ID, queueConfig.OptionId)
-					if err := audio.PlayAudioFile(session, queueConfig.AnnounceMessage); err != nil {
+					if err := audio.PlayAudioFileInterruptible(session, queueConfig.AnnounceMessage, stopHoldMusic); err != nil {
 						fmt.Printf("Error playing announce message for call %s: %v\n", session.ID, err)
 					}
 					lastAnnounceTime = time.Now()
-					time.Sleep(500 * time.Millisecond)
+
+					// Check if we should stop after announcement
+					select {
+					case <-stopHoldMusic:
+						fmt.Printf("Hold music stopped during announcement for call %s\n", session.ID)
+						return
+					default:
+					}
 				}
 
-				if err := audio.PlayAudioFile(session, queueConfig.HoldMusic); err != nil {
-					fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+				// Use interruptible hold music that can be stopped immediately
+				if err := audio.PlayAudioFileInterruptible(session, queueConfig.HoldMusic, stopHoldMusic); err != nil {
+					if err != session.Context.Err() {
+						fmt.Printf("Error playing hold music for call %s: %v\n", session.ID, err)
+					}
 					return
 				}
 			}
@@ -262,17 +304,51 @@ func HandleQueueLogic(session *types.CallSession, queueConfig *config.Queue) {
 
 	select {
 	case <-queueTimer.C:
-		fmt.Printf("Agent available for call %s\n", session.ID)
-		session.State = types.StateConnected
-		audio.PlayAudioFile(session, "ringing.wav")
+		if session.State == types.StateQueue {
+			fmt.Printf("Queue timeout for call %s\n", session.ID)
+			session.State = types.StateConnected
+			audio.PlayAudioFile(session, "ringing.wav")
+		}
 
 	case <-session.Context.Done():
 		fmt.Printf("Call %s context cancelled while in queue\n", session.ID)
 		return
+	}
+
+	// Wait for hold music to stop when agent is assigned
+	select {
+	case <-holdMusicDone:
+		fmt.Printf("Hold music ended for call %s\n", session.ID)
+	case <-session.Context.Done():
+		fmt.Printf("Call %s context cancelled while waiting for hold music to end\n", session.ID)
+		if session.AgentExt != "" {
+			agents.GetManager().EndCall(session.AgentExt)
+		}
+		return
+	}
+
+	// Keep call active while with agent
+	for session.State == types.StateConnected || session.State == types.StateWithAgent {
+		select {
+		case <-session.Context.Done():
+			if session.AgentExt != "" {
+				fmt.Printf("Call %s ended, cleaning up agent %s\n", session.ID, session.AgentExt)
+				agents.GetManager().EndCall(session.AgentExt)
+			}
+			return
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }
 
 func GetIVRConfig(optionId int) (*config.Ivr, bool) {
 	ivr, exists := ivrConfig[optionId]
 	return ivr, exists
+}
+
+func AssignCallToAgent(session *types.CallSession, agentExt string) {
+	session.State = types.StateWithAgent
+	session.AgentExt = agentExt
+	fmt.Printf("Call %s assigned to agent %s\n", session.ID, agentExt)
 }

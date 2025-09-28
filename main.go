@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"log"
+	"net"
 	"os"
 	"os/signal"
-	"strconv"
 
+	"github.com/Reverse-Call-Center/virtual-call-center/agents"
+	"github.com/Reverse-Call-Center/virtual-call-center/audio"
 	"github.com/Reverse-Call-Center/virtual-call-center/config"
 	"github.com/Reverse-Call-Center/virtual-call-center/handlers"
+	pb "github.com/Reverse-Call-Center/virtual-call-center/proto"
 	"github.com/Reverse-Call-Center/virtual-call-center/server"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -23,25 +27,31 @@ func main() {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
 	}
-
 	handlers.InitializeConfigs()
 
-	server.StartSIPServer(ctx, config, func() {
-		go startHealthCheckServer(config.SIPPort + 1)
-	})
+	// Set up audio bridge with agent manager
+	audio.SetAgentManager(agents.GetManager())
+	fmt.Println("Audio bridge configured with agent manager")
+
+	go startAgentServer()
+
+	server.StartSIPServer(ctx, config)
 }
 
-func startHealthCheckServer(port int) {
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy","service":"virtual-call-center"}`))
-	})
+func startAgentServer() {
+	log.Printf("Starting gRPC agent server...")
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
 
-	addr := ":" + strconv.Itoa(port)
-	fmt.Printf("Health check server listening on %s/health\n", addr)
+	grpcServer := grpc.NewServer()
+	pb.RegisterAgentServiceServer(grpcServer, agents.NewAgentServer())
 
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		fmt.Printf("Health check server error: %v\n", err)
+	fmt.Printf("Agent gRPC server listening on :50051\n")
+	log.Printf("gRPC server configured and ready to accept connections")
+
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
 	}
 }

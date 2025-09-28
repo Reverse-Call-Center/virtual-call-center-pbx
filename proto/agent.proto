@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package agent;
+
+option go_package = "github.com/Reverse-Call-Center/virtual-call-center/proto";
+
+service AgentService {
+    rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+}
+
+message AgentMessage {
+    oneof message {
+        RegisterAgent register = 1;
+        AudioData audio = 2;
+        PullFromQueue pull_queue = 3;
+        AgentStatusUpdate status = 4;
+    }
+}
+
+message ServerMessage {
+    oneof message {
+        CallAssignment call_assignment = 1;
+        AudioData audio = 2;
+        CallEnded call_ended = 3;
+    }
+}
+
+message RegisterAgent {
+    string extension = 1;
+    string name = 2;
+}
+
+message AudioData {
+    bytes pcm_data = 1;
+    string call_id = 2;
+}
+
+message PullFromQueue {
+    int32 queue_id = 1;
+}
+
+message AgentStatusUpdate {
+    AgentStatus status = 1;
+}
+
+message CallAssignment {
+    string call_id = 1;
+    string caller_id = 2;
+    int32 queue_id = 3;
+}
+
+message CallEnded {
+    string call_id = 1;
+}
+
+enum AgentStatus {
+    AVAILABLE = 0;
+    BUSY = 1;
+    AWAY = 2;
+}
